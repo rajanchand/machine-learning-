@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  detector-service:
+    build: .
+    container_name: detector-service
+    ports:
+      - "8000:8000"
+      - "9999:9999"
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  flow-simulator:
+    build: .
+    container_name: flow-simulator
+    depends_on:
+      - detector-service
+    command: ["python", "-m", "src.simulator", "--host", "detector-service", "--port", "9999", "--delay", "0.2", "--drift-after", "300"]
+    environment:
+      - PYTHONUNBUFFERED=1

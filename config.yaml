@@ -1,0 +1,11 @@
+# Authentication credentials (default: admin/admin)
+# Passwords are bcrypt-hashed. To generate a new hash:
+#   python -c "import bcrypt; print(bcrypt.hashpw(b'yourpassword', bcrypt.gensalt()).decode())"
+credentials:
+  admin:
+    name: "Administrator"
+    password: "$2b$12$gLeoRMa/6VYSReA4KK5S4.2OlHoPMtUDcFa86eDLmUGXsOJlJGJtO"  # admin
+
+app:
+  title: "NetShield — ML Network Anomaly Detection"
+  icon: "🛡️"

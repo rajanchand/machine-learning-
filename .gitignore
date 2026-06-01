@@ -1,0 +1,37 @@
+# Virtual environment
+venv/
+.venv/
+env/
+.env/
+
+# Python cache & compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Large dataset files
+data/
+*.pcap
+*.pcapng
+*.csv
+
+# Local SQLite databases
+*.db
+*.sqlite
+
+# Model checkpoints (to avoid GitHub 100MB size limit)
+models/saved/*.pt
+models/saved/*.joblib
+!models/saved/.gitkeep
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
