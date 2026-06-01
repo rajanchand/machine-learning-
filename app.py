@@ -23,6 +23,11 @@ inject_custom_css()
 if not login_form():
     st.stop()
 
+# Stateful Session Validation
+from streamlit_app.auth import check_session_timeout
+if not check_session_timeout():
+    st.stop()
+
 # ── Navigation ───────────────────────────────────────────────────────
 PAGES = {
     "🏠 Dashboard":         "streamlit_app.pages.1_dashboard",

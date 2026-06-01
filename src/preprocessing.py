@@ -11,7 +11,9 @@ Supports:
 import os
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import MinMaxScaler, LabelEncoder
+from sklearn.preprocessing import RobustScaler, LabelEncoder
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import mutual_info_classif
 from sklearn.model_selection import train_test_split
 from src.utils import get_logger, timer, save_preprocessing_artifacts
 
@@ -23,15 +25,24 @@ logger = get_logger("preprocessing")
 
 CIC_IDS_MARKERS = {"Flow Duration", "Total Fwd Packets", "Fwd Packet Length Max"}
 UNSW_NB15_MARKERS = {"sbytes", "dbytes", "sttl", "dttl", "attack_cat"}
+EDGE_IIOT_MARKERS = {"arp.opcode", "tcp.connection.rst", "Attack_type"}
+WUSTL_IIOT_MARKERS = {"Mean", "Std", "SrcPort", "DstPort", "Traffic"}
+CSE_CIC_IDS_2018_MARKERS = {"Timestamp", "Fwd Pkts/s", "Bwd Pkts/s", "Label"}
 
 
 def detect_dataset_format(df: pd.DataFrame) -> str:
-    """Detect if a DataFrame is CIC-IDS2017, UNSW-NB15, or generic."""
+    """Detect if a DataFrame matches standard NIDS formats (2026 standards)."""
     cols = set(df.columns.str.strip())
     if CIC_IDS_MARKERS.issubset(cols):
         return "CIC-IDS2017"
     if UNSW_NB15_MARKERS.issubset(cols):
         return "UNSW-NB15"
+    if EDGE_IIOT_MARKERS.issubset(cols) or "Attack_type" in cols:
+        return "Edge-IIoTset"
+    if WUSTL_IIOT_MARKERS.issubset(cols) or "Traffic" in cols:
+        return "WUSTL-IIoT-2021"
+    if CSE_CIC_IDS_2018_MARKERS.issubset(cols) or ("Timestamp" in cols and "Fwd Pkts/s" in cols):
+        return "CSE-CIC-IDS2018"
     return "generic"
 
 # ──────────────────────────────────────────────────────────────────────
@@ -127,8 +138,7 @@ def clean_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def extract_labels(df: pd.DataFrame, dataset_format: str):
     """
-    Extract binary labels (0 = normal, 1 = attack) from the dataset.
-    Returns (df_without_label, labels_series, label_column_name).
+    Extract binary labels (0 = normal, 1 = attack) from modern NIDS datasets.
     """
     if dataset_format == "CIC-IDS2017":
         label_col = "Label" if "Label" in df.columns else "label"
@@ -148,6 +158,34 @@ def extract_labels(df: pd.DataFrame, dataset_format: str):
         df_clean = df.drop(columns=cols_to_drop)
         return df_clean, labels, label_col
 
+    elif dataset_format == "Edge-IIoTset":
+        label_col = "label" if "label" in df.columns else "Label"
+        attack_type_col = "Attack_type" if "Attack_type" in df.columns else None
+        cols_to_drop = [label_col]
+        if attack_type_col and attack_type_col in df.columns:
+            cols_to_drop.append(attack_type_col)
+        labels = df[label_col].astype(int)
+        df_clean = df.drop(columns=cols_to_drop)
+        return df_clean, labels, label_col
+
+    elif dataset_format == "WUSTL-IIoT-2021":
+        label_col = "Label" if "Label" in df.columns else "label"
+        traffic_col = "Traffic" if "Traffic" in df.columns else None
+        cols_to_drop = [label_col]
+        if traffic_col and traffic_col in df.columns:
+            cols_to_drop.append(traffic_col)
+        labels = df[label_col].astype(int)
+        df_clean = df.drop(columns=cols_to_drop)
+        return df_clean, labels, label_col
+
+    elif dataset_format == "CSE-CIC-IDS2018":
+        label_col = "Label" if "Label" in df.columns else "label"
+        if label_col not in df.columns:
+            raise ValueError("CSE-CIC-IDS2018 dataset must contain a 'Label' column")
+        labels = (df[label_col].astype(str).str.strip().str.upper() != "BENIGN").astype(int)
+        df_clean = df.drop(columns=[label_col])
+        return df_clean, labels, label_col
+
     else:
         # Generic: look for 'Label', 'label', 'class', 'target'
         for col in ["Label", "label", "class", "target", "is_anomaly"]:
@@ -155,7 +193,6 @@ def extract_labels(df: pd.DataFrame, dataset_format: str):
                 labels = df[col]
                 # If string labels, binarize
                 if labels.dtype == object:
-                    # Assume most frequent is normal
                     normal_val = labels.mode()[0]
                     labels = (labels != normal_val).astype(int)
                 else:
@@ -164,27 +201,32 @@ def extract_labels(df: pd.DataFrame, dataset_format: str):
                 return df_clean, labels, col
         raise ValueError("Could not find a label column in the dataset")
 
-# ──────────────────────────────────────────────────────────────────────
-# Encoding & Scaling
-# ──────────────────────────────────────────────────────────────────────
 
 @timer
-def encode_and_scale(df: pd.DataFrame):
+def encode_and_scale(
+    df: pd.DataFrame,
+    use_robust: bool = True,
+    select_mi_features: bool = False,
+    n_mi_features: int = 15,
+    y: np.ndarray = None,
+    use_pca: bool = False,
+    n_pca_components: int = 10,
+):
     """
-    Encode categorical columns with LabelEncoder, scale numerics with MinMaxScaler.
-    Returns (scaled_array, scaler, label_encoders_dict, feature_names_list).
+    Encode categorical columns with LabelEncoder, scale numerics with RobustScaler (or MinMaxScaler).
+    Provides optional Mutual Information feature selection and PCA dimensionality reduction.
     """
     label_encoders = {}
 
     # Identify categorical columns
     cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
 
-    # Drop IP address columns (not useful as features)
-    ip_cols = [c for c in cat_cols if "ip" in c.lower() or "addr" in c.lower()]
+    # Drop network identifier columns (not useful as features)
+    ip_cols = [c for c in cat_cols if "ip" in c.lower() or "addr" in c.lower() or "host" in c.lower()]
     if ip_cols:
-        df = df.drop(columns=ip_cols)
+        df = df.drop(columns=ip_cols, errors="ignore")
         cat_cols = [c for c in cat_cols if c not in ip_cols]
-        logger.info(f"Dropped IP address columns: {ip_cols}")
+        logger.info(f"Dropped network identifier columns: {ip_cols}")
 
     # Label encode remaining categoricals
     for col in cat_cols:
@@ -193,19 +235,42 @@ def encode_and_scale(df: pd.DataFrame):
         label_encoders[col] = le
 
     if cat_cols:
-        logger.info(f"Label-encoded {len(cat_cols)} categorical columns: {cat_cols}")
+        logger.info(f"Label-encoded {len(cat_cols)} categorical columns")
 
     # Ensure all columns are numeric
     df = df.apply(pd.to_numeric, errors="coerce")
     df.fillna(0, inplace=True)
 
+    # Optional Feature Selection: Mutual Information
+    if select_mi_features and y is not None and len(df.columns) > n_mi_features:
+        logger.info(f"Computing Mutual Information for {len(df.columns)} features...")
+        mi_scores = mutual_info_classif(df.values, y, random_state=42)
+        top_indices = np.argsort(mi_scores)[::-1][:n_mi_features]
+        selected_cols = [df.columns[i] for i in top_indices]
+        logger.info(f"Mutual Information selected top {n_mi_features} features: {selected_cols[:5]}...")
+        df = df[selected_cols]
+
     feature_names = df.columns.tolist()
 
-    # Scale with MinMaxScaler
-    scaler = MinMaxScaler()
+    # Scale with RobustScaler (outlier resistant NIDS standard) or MinMaxScaler
+    if use_robust:
+        scaler = RobustScaler()
+    else:
+        from sklearn.preprocessing import MinMaxScaler
+        scaler = MinMaxScaler()
+        
     X_scaled = scaler.fit_transform(df.values)
 
-    logger.info(f"Scaled features: {X_scaled.shape}")
+    # Optional Feature Extraction: PCA
+    if use_pca and X_scaled.shape[1] > n_pca_components:
+        logger.info(f"Fitting PCA with {n_pca_components} components...")
+        pca = PCA(n_components=n_pca_components, random_state=42)
+        X_scaled = pca.fit_transform(X_scaled)
+        feature_names = [f"PCA_Component_{i}" for i in range(n_pca_components)]
+        # Package scaler and PCA together as a custom pipeline object
+        scaler = {"scaler": scaler, "pca": pca}
+
+    logger.info(f"Preprocessed features shape: {X_scaled.shape}")
     return X_scaled, scaler, label_encoders, feature_names
 
 # ──────────────────────────────────────────────────────────────────────
@@ -398,6 +463,78 @@ def generate_mock_dataset(format_type: str = "UNSW-NB15", n_samples: int = 2000,
         # Shuffle
         df = df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
         return df
+
+    elif format_type == "Edge-IIoTset":
+        # Features: arp.opcode, tcp.connection.rst, http.request.method, Attack_type, label
+        n_attacks = int(n_samples * 0.15)
+        n_normal = n_samples - n_attacks
+        
+        df_norm = pd.DataFrame({
+            "arp.opcode": np.zeros(n_normal, dtype=int),
+            "tcp.connection.rst": np.random.choice([0, 1], size=n_normal, p=[0.98, 0.02]),
+            "http.request.method": np.random.choice(["GET", "POST", "none"], size=n_normal, p=[0.3, 0.1, 0.6]),
+            "Attack_type": "Normal",
+            "label": np.zeros(n_normal, dtype=int)
+        })
+        
+        df_att = pd.DataFrame({
+            "arp.opcode": np.random.choice([0, 1, 2], size=n_attacks, p=[0.7, 0.2, 0.1]),
+            "tcp.connection.rst": np.random.choice([0, 1], size=n_attacks, p=[0.40, 0.60]),
+            "http.request.method": np.random.choice(["GET", "POST", "none"], size=n_attacks, p=[0.4, 0.2, 0.4]),
+            "Attack_type": np.random.choice(["DDoS_UDP", "SQL_injection", "Vulnerability_scanner"], size=n_attacks),
+            "label": np.ones(n_attacks, dtype=int)
+        })
+        df = pd.concat([df_norm, df_att], ignore_index=True).sample(frac=1.0, random_state=seed).reset_index(drop=True)
+        return df
+
+    elif format_type == "WUSTL-IIoT-2021":
+        # Features: Mean, Std, SrcPort, DstPort, Traffic, Label
+        n_attacks = int(n_samples * 0.15)
+        n_normal = n_samples - n_attacks
+        
+        df_norm = pd.DataFrame({
+            "Mean": np.random.uniform(0.001, 0.05, size=n_normal),
+            "Std": np.random.uniform(0.0, 0.01, size=n_normal),
+            "SrcPort": np.random.randint(1024, 65535, size=n_normal),
+            "DstPort": np.random.choice([80, 443, 502], size=n_normal, p=[0.4, 0.4, 0.2]),
+            "Traffic": "Normal",
+            "Label": np.zeros(n_normal, dtype=int)
+        })
+        df_att = pd.DataFrame({
+            "Mean": np.random.uniform(0.5, 5.0, size=n_attacks),
+            "Std": np.random.uniform(0.1, 2.0, size=n_attacks),
+            "SrcPort": np.random.randint(1024, 65535, size=n_attacks),
+            "DstPort": np.random.choice([80, 502, 22], size=n_attacks, p=[0.2, 0.7, 0.1]),
+            "Traffic": np.random.choice(["Reconnaissance", "DoS", "Command_Injection"], size=n_attacks),
+            "Label": np.ones(n_attacks, dtype=int)
+        })
+        df = pd.concat([df_norm, df_att], ignore_index=True).sample(frac=1.0, random_state=seed).reset_index(drop=True)
+        return df
+
+    elif format_type == "CSE-CIC-IDS2018":
+        # Features: Timestamp, Fwd Pkts/s, Bwd Pkts/s, Flow Duration, Tot Fwd Pkts, Label
+        n_attacks = int(n_samples * 0.15)
+        n_normal = n_samples - n_attacks
+        
+        df_norm = pd.DataFrame({
+            "Timestamp": ["01/06/2026 12:00:00"] * n_normal,
+            "Fwd Pkts/s": np.random.exponential(scale=50.0, size=n_normal),
+            "Bwd Pkts/s": np.random.exponential(scale=30.0, size=n_normal),
+            "Flow Duration": np.random.randint(100, 100000, size=n_normal),
+            "Tot Fwd Pkts": np.random.randint(1, 10, size=n_normal),
+            "Label": "Benign"
+        })
+        df_att = pd.DataFrame({
+            "Timestamp": ["01/06/2026 13:00:00"] * n_attacks,
+            "Fwd Pkts/s": np.random.exponential(scale=5000.0, size=n_attacks),
+            "Bwd Pkts/s": np.random.exponential(scale=10.0, size=n_attacks),
+            "Flow Duration": np.random.randint(1, 100, size=n_attacks),
+            "Tot Fwd Pkts": np.random.randint(100, 5000, size=n_attacks),
+            "Label": np.random.choice(["DDoS attacks-LOIC-HTTP", "Botnet", "Brute Force-Web"], size=n_attacks)
+        })
+        df = pd.concat([df_norm, df_att], ignore_index=True).sample(frac=1.0, random_state=seed).reset_index(drop=True)
+        return df
+
     else:
         raise ValueError(f"Unknown mock format: {format_type}")
 

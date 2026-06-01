@@ -1,28 +1,37 @@
+# ==============================================================================
+# Phase 5 — docker-compose.yml: Secure Container Setup & Orchestration
+# ==============================================================================
+
 version: '3.8'
 
 services:
-  detector-service:
-    build: .
-    container_name: detector-service
+  nids-dashboard:
+    build:
+      context: .
+      target: runner
+    container_name: nids-dashboard
     ports:
-      - "8000:8000"
-      - "9999:9999"
+      - "8501:8501"
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Enforce standard crisp Streamlit Light theme inside container environment
+      - STREAMLIT_THEME_BASE=light
+      - STREAMLIT_THEME_PRIMARYCOLOR=#4f46e5
+      - STREAMLIT_THEME_BACKGROUNDCOLOR=#f8fafc
+      - STREAMLIT_THEME_SECONDARYBACKGROUNDCOLOR=#f1f5f9
+      - STREAMLIT_THEME_TEXTCOLOR=#1e293b
+    restart: unless-stopped
+    
+    # ── Security & Resource Limits (Mitigate Exhaustion & Exploits) ──
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 1500M
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+          
+    # Persistent mount point for cryptographically signed model files
     volumes:
-      - ./data:/app/data
-      - ./models:/app/models
-    environment:
-      - PYTHONUNBUFFERED=1
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/ready"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
-  flow-simulator:
-    build: .
-    container_name: flow-simulator
-    depends_on:
-      - detector-service
-    command: ["python", "-m", "src.simulator", "--host", "detector-service", "--port", "9999", "--delay", "0.2", "--drift-after", "300"]
-    environment:
-      - PYTHONUNBUFFERED=1
+      - ./models/saved:/app/models/saved:rw

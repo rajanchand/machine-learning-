@@ -37,7 +37,11 @@ def render():
     st.markdown("💡 **No dataset ready?** Load a high-fidelity synthetic demo dataset instantly:")
     demo_cols = st.columns([2, 1, 1])
     with demo_cols[0]:
-        demo_format = st.selectbox("Demo Format", ["UNSW-NB15", "CIC-IDS2017"], label_visibility="collapsed")
+        demo_format = st.selectbox(
+            "Demo Format",
+            ["UNSW-NB15", "CIC-IDS2017", "Edge-IIoTset", "WUSTL-IIoT-2021", "CSE-CIC-IDS2018"],
+            label_visibility="collapsed"
+        )
     with demo_cols[1]:
         demo_samples = st.selectbox("Samples", [1000, 2000, 5000], index=1, label_visibility="collapsed")
     with demo_cols[2]:
@@ -47,15 +51,22 @@ def render():
     dataset_format = None
 
     if uploaded is not None:
-        # Save uploaded file temporarily
-        import tempfile, os
-        suffix = "." + uploaded.name.split(".")[-1]
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            tmp.write(uploaded.getbuffer())
-            tmp_path = tmp.name
-
         try:
-            with st.spinner("Loading and preprocessing dataset..."):
+            # ── Strict Secure Sandbox Verification ──
+            from streamlit_app.security import secure_sandbox_process
+            file_bytes, filename = secure_sandbox_process(uploaded)
+            
+            # Show Antivirus scanning results
+            st.success(f"🛡️ Sandbox Scan Verified: Clean file loaded safely! ({filename})")
+            
+            # Save uploaded file temporarily for loading
+            import tempfile, os
+            suffix = "." + filename.split(".")[-1]
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(file_bytes)
+                tmp_path = tmp.name
+
+            with st.spinner("Parsing and preprocessing dataset..."):
                 set_seed(42)
 
                 # Load
@@ -65,10 +76,10 @@ def render():
                     df_raw = load_csv(tmp_path)
 
                 dataset_format = detect_dataset_format(df_raw)
-        except Exception as e:
-            st.error(f"Error loading file: {e}")
-        finally:
+                
             os.unlink(tmp_path)
+        except Exception as e:
+            st.error(f"🚨 Security Violation or Load Error: {e}")
             
     elif load_demo:
         with st.spinner("Generating synthetic high-fidelity demo dataset..."):
@@ -142,6 +153,10 @@ def render():
                 "label_column": label_col,
                 "n_features": X_scaled.shape[1],
                 "class_distribution": {"normal": n_normal, "attack": n_attack},
+                "df_features": df_features,
+                "labels": labels,
+                "test_size": test_size,
+                "val_size": val_size,
             }
 
             # ── Split Summary ──

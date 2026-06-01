@@ -58,19 +58,21 @@ def render():
     ])
     fig.update_layout(
         title=f"{metric_choice} Comparison",
-        template="plotly_dark", height=400,
+        template="plotly_white", height=400,
         yaxis_title=metric_choice,
         plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)",
     )
     st.plotly_chart(fig, use_container_width=True)
 
     # ── Ablation Study ──
-    if "LSTM Autoencoder" in results and len(results) >= 3:
+    proposed_candidates = [m for m in ["CNN-LSTM Autoencoder", "LSTM Autoencoder"] if m in results]
+    if proposed_candidates and len(results) >= 3:
         section_header("Ablation Study")
-        st.markdown("Comparing the proposed model (LSTM Autoencoder) against baselines and the ensemble.")
+        ablation_base = st.selectbox("Select proposed base model for ablation comparison", proposed_candidates)
+        st.markdown(f"Comparing the proposed model (**{ablation_base}**) against baselines and the ensemble.")
 
-        base = results["LSTM Autoencoder"]["metrics"]
-        variants = {name: r["metrics"] for name, r in results.items() if name != "LSTM Autoencoder"}
+        base = results[ablation_base]["metrics"]
+        variants = {name: r["metrics"] for name, r in results.items() if name != ablation_base}
         ablation_df = ablation_study(base, variants)
 
         # Show only key columns
